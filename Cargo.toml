@@ -4,6 +4,7 @@ members = [
     "speak-code-cli",
     "speak-code-server", 
     "speak-code-shared",
+    "examples",
 ]
 
 [workspace.dependencies]

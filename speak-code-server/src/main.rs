@@ -47,18 +47,16 @@ async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
 
 async fn handle_socket(mut socket: WebSocket) {
     while let Some(msg) = socket.recv().await {
-        if let Ok(msg) = msg {
-            if let Message::Text(text) = msg {
-                if let Ok(request) = serde_json::from_str::<ChatRequest>(&text) {
-                    // TODO: Stream OpenAI/Anthropic response
-                    let chunk = StreamChunk {
-                        delta: "Streaming from Rust!".to_string(),
-                        done: true,
-                    };
-                    
-                    if let Ok(response) = serde_json::to_string(&chunk) {
-                        let _ = socket.send(Message::Text(response)).await;
-                    }
+        if let Ok(Message::Text(text)) = msg {
+            if let Ok(_request) = serde_json::from_str::<ChatRequest>(&text) {
+                // TODO: Stream OpenAI/Anthropic response
+                let chunk = StreamChunk {
+                    delta: "Streaming from Rust!".to_string(),
+                    done: true,
+                };
+                
+                if let Ok(response) = serde_json::to_string(&chunk) {
+                    let _ = socket.send(Message::Text(response)).await;
                 }
             }
         }

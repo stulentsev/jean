@@ -1,0 +1,13 @@
+[package]
+name = "ratatui-examples"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "filterable_file_list"
+path = "filterable_file_list.rs"
+
+[dependencies]
+ratatui = "0.28"
+crossterm = "0.28"
+walkdir = "2"
