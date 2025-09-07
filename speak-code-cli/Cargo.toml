@@ -1,0 +1,23 @@
+[package]
+name = "speak-code-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "speak-code"
+path = "src/main.rs"
+
+[dependencies]
+speak-code-shared = { path = "../speak-code-shared" }
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tungstenite = "0.24"
+tokio-tungstenite = "0.24"
+futures = "0.3"

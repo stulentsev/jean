@@ -1,0 +1,46 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+*.pdb
+
+# Environment and secrets
+.env
+.env.*
+*.key
+*.pem
+*.cert
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.settings/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Logs
+*.log
+logs/
+
+# Testing
+tarpaulin-report.html
+coverage/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
