@@ -34,6 +34,8 @@ Thumbs.db
 # Logs
 *.log
 logs/
+speak-code-cli.log
+speak-code-server.log
 
 # Testing
 tarpaulin-report.html
