@@ -9,10 +9,10 @@ use crossterm::{
 };
 use ratatui::{
     backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame, Terminal,
 };
 use speak_code_shared::{ChatMessage, ChatRequest, MessageRole, StreamChunk};
@@ -22,22 +22,21 @@ use tokio::sync::mpsc;
 struct App {
     messages: Vec<ChatMessage>,
     input: String,
-    scroll: u16,
+    scroll_offset: usize,
     connection_status: ConnectionStatus,
     streaming_message: Option<String>,
+    cursor_position: usize,
 }
 
 impl App {
     fn new() -> Self {
         Self {
-            messages: vec![ChatMessage {
-                role: MessageRole::System,
-                content: "Welcome to Speak Code! Connecting to backend...".to_string(),
-            }],
+            messages: vec![],
             input: String::new(),
-            scroll: 0,
+            scroll_offset: 0,
             connection_status: ConnectionStatus::Disconnected,
             streaming_message: None,
+            cursor_position: 0,
         }
     }
 
@@ -67,6 +66,42 @@ impl App {
                 });
             }
         }
+    }
+
+    fn move_cursor_left(&mut self) {
+        if self.cursor_position > 0 {
+            self.cursor_position -= 1;
+        }
+    }
+
+    fn move_cursor_right(&mut self) {
+        if self.cursor_position < self.input.len() {
+            self.cursor_position += 1;
+        }
+    }
+
+    fn insert_char(&mut self, c: char) {
+        self.input.insert(self.cursor_position, c);
+        self.cursor_position += 1;
+    }
+
+    fn delete_char(&mut self) {
+        if self.cursor_position > 0 {
+            self.cursor_position -= 1;
+            self.input.remove(self.cursor_position);
+        }
+    }
+
+    fn scroll_up(&mut self, amount: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_add(amount);
+    }
+
+    fn scroll_down(&mut self, amount: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(amount);
+    }
+
+    fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = 0;
     }
 }
 
@@ -132,31 +167,38 @@ async fn run_app<B: Backend>(
 
         tokio::select! {
             Some(event) = ui_rx.recv() => {
-                if let Event::Key(key) = event {
-                    if key.kind == KeyEventKind::Press {
+                match event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
                         match key.code {
                             KeyCode::Char('q') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                                 return Ok(())
                             }
+                            KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                                return Ok(())
+                            }
                             KeyCode::Char(c) => {
-                                app.input.push(c);
+                                app.insert_char(c);
                             }
                             KeyCode::Backspace => {
-                                app.input.pop();
+                                app.delete_char();
+                            }
+                            KeyCode::Left => {
+                                app.move_cursor_left();
+                            }
+                            KeyCode::Right => {
+                                app.move_cursor_right();
                             }
                             KeyCode::Enter => {
                                 if !app.input.is_empty() {
                                     let content = app.input.clone();
                                     app.add_user_message(content.clone());
                                     app.input.clear();
+                                    app.cursor_position = 0;
+                                    app.scroll_to_bottom();
                                     
-                                    // Filter out the initial system message that's just for UI
+                                    // Filter out UI-only system messages
                                     let messages_to_send: Vec<ChatMessage> = app.messages
                                         .iter()
-                                        .filter(|msg| {
-                                            !(matches!(msg.role, MessageRole::System) && 
-                                              msg.content.contains("Welcome to Speak Code"))
-                                        })
                                         .cloned()
                                         .collect();
                                     
@@ -177,18 +219,38 @@ async fn run_app<B: Backend>(
                                 }
                             }
                             KeyCode::Up => {
-                                if app.scroll < app.messages.len() as u16 {
-                                    app.scroll += 1;
-                                }
+                                app.scroll_up(1);
                             }
                             KeyCode::Down => {
-                                if app.scroll > 0 {
-                                    app.scroll -= 1;
-                                }
+                                app.scroll_down(1);
+                            }
+                            KeyCode::PageUp => {
+                                app.scroll_up(10);
+                            }
+                            KeyCode::PageDown => {
+                                app.scroll_down(10);
+                            }
+                            KeyCode::Home => {
+                                app.cursor_position = 0;
+                            }
+                            KeyCode::End => {
+                                app.cursor_position = app.input.len();
                             }
                             _ => {}
                         }
                     }
+                    Event::Mouse(mouse) => {
+                        match mouse.kind {
+                            event::MouseEventKind::ScrollUp => {
+                                app.scroll_up(3);
+                            }
+                            event::MouseEventKind::ScrollDown => {
+                                app.scroll_down(3);
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
                 }
             }
             Some(chunk) = chunk_rx.recv() => {
@@ -203,8 +265,11 @@ async fn run_app<B: Backend>(
                     } else {
                         app.finish_streaming();
                     }
+                    app.scroll_to_bottom();
                 } else {
                     app.append_stream_chunk(&chunk.delta);
+                    // Auto-scroll to bottom while streaming
+                    app.scroll_to_bottom();
                 }
             }
         }
@@ -212,15 +277,28 @@ async fn run_app<B: Backend>(
 }
 
 fn ui(f: &mut Frame, app: &App) {
+    let area = f.area();
+    
+    // Split into main area and input area
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(3),
+            Constraint::Min(1),     // Chat area takes remaining space
+            Constraint::Length(3),  // Input box is always 3 lines
         ])
-        .split(f.area());
+        .split(area);
 
+    // Render chat messages
+    render_chat(f, app, chunks[0]);
+    
+    // Render input box
+    render_input(f, app, chunks[1]);
+}
+
+fn render_chat(f: &mut Frame, app: &App, area: Rect) {
+    let mut all_lines: Vec<Line> = Vec::new();
+    
+    // Add connection status at the top
     let status_color = match &app.connection_status {
         ConnectionStatus::Connected => Color::Green,
         ConnectionStatus::Connecting => Color::Yellow,
@@ -235,11 +313,13 @@ fn ui(f: &mut Frame, app: &App) {
         ConnectionStatus::Error(e) => &format!("● Error: {}", e),
     };
     
-    let status = Paragraph::new(status_text)
-        .style(Style::default().fg(status_color))
-        .block(Block::default());
-    f.render_widget(status, chunks[0]);
-
+    all_lines.push(Line::from(Span::styled(
+        status_text,
+        Style::default().fg(status_color),
+    )));
+    all_lines.push(Line::from(""));
+    
+    // Build all message lines
     let mut all_messages = app.messages.clone();
     if let Some(ref streaming) = app.streaming_message {
         all_messages.push(ChatMessage {
@@ -247,52 +327,91 @@ fn ui(f: &mut Frame, app: &App) {
             content: if streaming.is_empty() {
                 "●●●".to_string()
             } else {
-                streaming.clone()
+                format!("{}▌", streaming) // Add cursor to show it's still streaming
             },
         });
     }
+    
+    for msg in &all_messages {
+        let style = match msg.role {
+            MessageRole::System => Style::default().fg(Color::Yellow),
+            MessageRole::User => Style::default().fg(Color::Cyan),
+            MessageRole::Assistant => Style::default().fg(Color::Green),
+        };
+        
+        let prefix = match msg.role {
+            MessageRole::System => "System",
+            MessageRole::User => "You",
+            MessageRole::Assistant => "Assistant",
+        };
+        
+        // Add role prefix
+        all_lines.push(Line::from(Span::styled(
+            format!("{}:", prefix),
+            style.add_modifier(Modifier::BOLD),
+        )));
+        
+        // Add message content lines
+        for line in msg.content.lines() {
+            all_lines.push(Line::from(Span::styled(line, style)));
+        }
+        
+        // Add spacing after message
+        all_lines.push(Line::from(""));
+    }
+    
+    // Calculate visible lines based on scroll offset
+    let total_lines = all_lines.len();
+    let visible_height = area.height as usize;
+    
+    // Calculate the correct view window
+    let start_line = if total_lines > visible_height {
+        // If we have more lines than can fit
+        let max_scroll = total_lines.saturating_sub(visible_height);
+        let actual_scroll = app.scroll_offset.min(max_scroll);
+        total_lines.saturating_sub(visible_height).saturating_sub(actual_scroll)
+    } else {
+        0
+    };
+    
+    let end_line = (start_line + visible_height).min(total_lines);
+    let visible_lines: Vec<Line> = all_lines[start_line..end_line].to_vec();
+    
+    // Create paragraph with visible lines
+    let chat = Paragraph::new(visible_lines)
+        .block(Block::default().borders(Borders::NONE))
+        .wrap(Wrap { trim: false });
+    
+    f.render_widget(chat, area);
+}
 
-    let messages: Vec<ListItem> = all_messages
-        .iter()
-        .map(|msg| {
-            let style = match msg.role {
-                MessageRole::System => Style::default().fg(Color::Yellow),
-                MessageRole::User => Style::default().fg(Color::Cyan),
-                MessageRole::Assistant => Style::default().fg(Color::Green),
-            };
-            
-            let prefix = match msg.role {
-                MessageRole::System => "System",
-                MessageRole::User => "You",
-                MessageRole::Assistant => "Assistant",
-            };
-            
-            // Split content by newlines to preserve formatting
-            let mut lines = vec![
-                Line::from(Span::styled(format!("{}:", prefix), style.add_modifier(Modifier::BOLD))),
-            ];
-            
-            // Add each line of the message content
-            for line in msg.content.lines() {
-                lines.push(Line::from(Span::raw(line)));
-            }
-            
-            // Add empty line after message
-            lines.push(Line::from(""));
-            
-            ListItem::new(lines)
-        })
-        .collect();
-
-    let messages_list = List::new(messages)
-        .block(Block::default().borders(Borders::ALL).title("Chat"))
-        .style(Style::default());
-
-    f.render_widget(messages_list, chunks[1]);
-
-    let input = Paragraph::new(app.input.as_str())
-        .block(Block::default().borders(Borders::ALL).title("Input (Ctrl-Q to quit)"))
+fn render_input(f: &mut Frame, app: &App, area: Rect) {
+    let input_text = if app.input.is_empty() {
+        "Type your message..."
+    } else {
+        &app.input
+    };
+    
+    let style = if app.input.is_empty() {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default()
+    };
+    
+    let input = Paragraph::new(input_text)
+        .style(style)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .title("Input (Ctrl-Q to quit, ↑↓ to scroll)")
+            .border_style(Style::default().fg(Color::White)))
         .wrap(Wrap { trim: true });
     
-    f.render_widget(input, chunks[2]);
+    f.render_widget(input, area);
+    
+    // Show cursor
+    if !app.input.is_empty() {
+        let cursor_x = area.x + app.cursor_position as u16 + 1;
+        let cursor_y = area.y + 1;
+        f.set_cursor_position((cursor_x.min(area.x + area.width - 2), cursor_y));
+    }
 }
