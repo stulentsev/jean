@@ -1,7 +1,7 @@
 # CLAUDE.md - Project Context
 
 ## Project Overview
-**Speak Code** is a terminal-based coding assistant similar to Claude Code, built entirely in Rust. It provides an interactive CLI interface for chatting with LLMs to assist with coding tasks.
+**Jean** is a terminal-based coding assistant, built entirely in Rust. It provides an interactive CLI interface for chatting with LLMs to assist with coding tasks.
 
 ## Architecture
 
@@ -14,27 +14,27 @@
 
 ### Project Structure
 ```
-speak-code/
-├── speak-code-server/    # Axum backend server
-├── speak-code-cli/       # Ratatui TUI client
-├── speak-code-shared/    # Shared types between client/server
-└── Cargo.toml           # Workspace configuration
+jean/
+├── jean-server/    # Axum backend server
+├── jean-cli/       # Ratatui TUI client
+├── jean-shared/    # Shared types between client/server
+└── Cargo.toml     # Workspace configuration
 ```
 
 ### Key Components
 
-**speak-code-shared**
+**jean-shared**
 - Defines common types: `ChatMessage`, `ChatRequest`, `ChatResponse`, `StreamChunk`
 - Ensures type safety across client/server boundary
 
-**speak-code-server**
+**jean-server**
 - REST endpoint: `POST /chat` for single responses
 - WebSocket: `/ws/chat` for streaming responses
 - Health check: `GET /health`
 - Runs on `http://127.0.0.1:3000`
 - TODO: Integrate actual LLM APIs (OpenAI/Anthropic)
 
-**speak-code-cli**
+**jean-cli**
 - Terminal UI with message history
 - Keyboard controls: Type message, Enter to send, Ctrl-Q to quit
 - Arrow keys for scrolling history
@@ -47,13 +47,13 @@ speak-code/
 cargo build
 
 # Run backend server
-cargo run -p speak-code-server
+cargo run -p jean-server
 
 # Run CLI (in separate terminal)
-cargo run -p speak-code-cli
+cargo run -p jean-cli
 
 # Run with release optimizations
-cargo run --release -p speak-code-cli
+cargo run --release -p jean-cli
 ```
 
 ## Next Steps / TODOs
@@ -90,7 +90,7 @@ cargo run --release -p speak-code-cli
 - **Shared Types Crate**: Ensures contract between client/server stays in sync
 
 ## Repository
-- GitHub: `git@github.com:stulentsev/code-speak.git`
+- GitHub: `git@github.com:stulentsev/jean.git`
 - Main branch: `master` 
 
 ## Testing Strategy

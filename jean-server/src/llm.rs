@@ -8,7 +8,7 @@ use async_openai::{
     Client,
 };
 use futures_util::StreamExt;
-use speak_code_shared::{ChatMessage, MessageRole, StreamChunk};
+use jean_shared::{ChatMessage, MessageRole, StreamChunk};
 use std::error::Error;
 use tokio::sync::mpsc;
 use tracing::{info, error};

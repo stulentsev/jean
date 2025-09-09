@@ -15,7 +15,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame, Terminal,
 };
-use speak_code_shared::{ChatMessage, ChatRequest, MessageRole, StreamChunk};
+use jean_shared::{ChatMessage, ChatRequest, MessageRole, StreamChunk};
 use std::io;
 use tokio::sync::mpsc;
 
@@ -108,7 +108,7 @@ impl App {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging to file instead of terminal to avoid corrupting TUI
-    let log_file = std::fs::File::create("speak-code-cli.log").ok();
+    let log_file = std::fs::File::create("jean-cli.log").ok();
     if let Some(file) = log_file {
         tracing_subscriber::fmt()
             .with_writer(file)

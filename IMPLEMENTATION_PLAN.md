@@ -12,7 +12,7 @@ Implement end-to-end chat functionality with streaming responses from OpenAI API
 ### Phase 1: Backend LLM Integration
 
 #### 1.1 Add Dependencies
-**File**: `speak-code-server/Cargo.toml`
+**File**: `jean-server/Cargo.toml`
 - Add `async-openai = "0.24"`
 - Add `dotenv = "0.15"` for environment configuration
 - Add `futures-util = "0.3"` for stream handling
@@ -25,14 +25,14 @@ OPENAI_MODEL=gpt-4-turbo-preview
 ```
 
 #### 1.3 LLM Service Module
-**File**: `speak-code-server/src/llm.rs`
+**File**: `jean-server/src/llm.rs`
 - Create OpenAI client wrapper
 - Implement streaming response handler
 - Convert OpenAI stream chunks to our `StreamChunk` format
 - Handle errors gracefully (API limits, network issues)
 
 #### 1.4 Update WebSocket Handler
-**File**: `speak-code-server/src/main.rs`
+**File**: `jean-server/src/main.rs`
 - Integrate LLM service into `handle_socket`
 - Stream OpenAI responses chunk by chunk
 - Send each chunk as WebSocket message
@@ -41,27 +41,27 @@ OPENAI_MODEL=gpt-4-turbo-preview
 ### Phase 2: CLI WebSocket Client
 
 #### 2.1 Add Dependencies
-**File**: `speak-code-cli/Cargo.toml`
+**File**: `jean-cli/Cargo.toml`
 - Add `tokio-tungstenite = "0.24"` for WebSocket client
 - Add `futures-util = "0.3"` for stream handling
 - Add `reqwest = { version = "0.12", features = ["json"] }` for HTTP client
 
 #### 2.2 Backend Client Module
-**File**: `speak-code-cli/src/client.rs`
+**File**: `jean-cli/src/client.rs`
 - WebSocket connection management
 - Reconnection logic with exponential backoff
 - Message serialization/deserialization
 - Stream chunk accumulation
 
 #### 2.3 Update App State
-**File**: `speak-code-cli/src/main.rs`
+**File**: `jean-cli/src/main.rs`
 - Add connection status field
 - Add pending message buffer
 - Add streaming message accumulator
 - Track message state (sending/streaming/complete)
 
 #### 2.4 Async Event Loop
-**File**: `speak-code-cli/src/main.rs`
+**File**: `jean-cli/src/main.rs`
 - Convert main loop to use tokio channels
 - Separate UI events from network events
 - Handle concurrent keyboard input and WebSocket messages
@@ -146,7 +146,7 @@ enum ConnectionState {
 
 ### Server Configuration
 ```toml
-# speak-code-server/config.toml
+# jean-server/config.toml
 [openai]
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-4-turbo-preview"
@@ -157,7 +157,7 @@ stream_timeout_secs = 30
 
 ### Client Configuration
 ```toml
-# speak-code-cli/config.toml
+# jean-cli/config.toml
 [server]
 url = "ws://127.0.0.1:3000/ws/chat"
 reconnect_interval_ms = 1000

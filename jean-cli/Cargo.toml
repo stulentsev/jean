@@ -1,14 +1,14 @@
 [package]
-name = "speak-code-cli"
+name = "jean-cli"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "speak-code"
+name = "jean"
 path = "src/main.rs"
 
 [dependencies]
-speak-code-shared = { path = "../speak-code-shared" }
+jean-shared = { path = "../jean-shared" }
 ratatui = "0.29"
 crossterm = "0.28"
 tokio = { workspace = true }

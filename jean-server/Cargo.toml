@@ -1,10 +1,10 @@
 [package]
-name = "speak-code-server"
+name = "jean-server"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-speak-code-shared = { path = "../speak-code-shared" }
+jean-shared = { path = "../jean-shared" }
 axum = { version = "0.7", features = ["ws"] }
 tokio = { workspace = true }
 tower = "0.5"

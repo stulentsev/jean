@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use speak_code_shared::{ChatRequest, ChatResponse, StreamChunk};
+use jean_shared::{ChatRequest, ChatResponse, StreamChunk};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;

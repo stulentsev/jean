@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "speak-code-cli",
-    "speak-code-server", 
-    "speak-code-shared",
+    "jean-cli",
+    "jean-server", 
+    "jean-shared",
     "examples",
 ]
 
