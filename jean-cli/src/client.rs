@@ -16,29 +16,32 @@ pub enum ConnectionStatus {
 
 pub struct BackendClient {
     tx: mpsc::UnboundedSender<ChatRequest>,
-    status: Arc<Mutex<ConnectionStatus>>,
 }
 
 impl BackendClient {
-    pub fn new(ws_url: String) -> (Self, mpsc::UnboundedReceiver<StreamChunk>) {
+    pub fn new(ws_url: String) -> (Self, mpsc::UnboundedReceiver<StreamChunk>, mpsc::UnboundedReceiver<ConnectionStatus>) {
         let (tx, mut rx) = mpsc::unbounded_channel::<ChatRequest>();
         let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<StreamChunk>();
+        let (status_tx, status_rx) = mpsc::unbounded_channel::<ConnectionStatus>();
         let status = Arc::new(Mutex::new(ConnectionStatus::Disconnected));
         
         let client = Self {
             tx,
-            status: status.clone(),
         };
 
         tokio::spawn(async move {
             loop {
-                *status.lock().await = ConnectionStatus::Connecting;
+                let new_status = ConnectionStatus::Connecting;
+                *status.lock().await = new_status.clone();
+                let _ = status_tx.send(new_status);
                 debug!("Attempting to connect to {}", &ws_url);
                 
                 match connect_async(&ws_url).await {
                     Ok((ws_stream, _)) => {
                         debug!("Connected to backend");
-                        *status.lock().await = ConnectionStatus::Connected;
+                        let new_status = ConnectionStatus::Connected;
+                        *status.lock().await = new_status.clone();
+                        let _ = status_tx.send(new_status);
                         
                         let (mut write, mut read) = ws_stream.split();
                         
@@ -90,25 +93,25 @@ impl BackendClient {
                     }
                     Err(e) => {
                         error!("Failed to connect: {}", e);
-                        *status.lock().await = ConnectionStatus::Error(e.to_string());
+                        let new_status = ConnectionStatus::Error(e.to_string());
+                        *status.lock().await = new_status.clone();
+                        let _ = status_tx.send(new_status);
                     }
                 }
                 
-                *status.lock().await = ConnectionStatus::Disconnected;
+                let new_status = ConnectionStatus::Disconnected;
+                *status.lock().await = new_status.clone();
+                let _ = status_tx.send(new_status);
                 warn!("Reconnecting in 2 seconds...");
                 tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
             }
         });
 
-        (client, chunk_rx)
+        (client, chunk_rx, status_rx)
     }
 
     pub async fn send_message(&self, request: ChatRequest) -> Result<()> {
         self.tx.send(request)?;
         Ok(())
-    }
-
-    pub async fn get_status(&self) -> ConnectionStatus {
-        self.status.lock().await.clone()
     }
 }

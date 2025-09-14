@@ -125,7 +125,7 @@ async fn main() -> Result<()> {
     let mut app = App::new();
     
     let ws_url = "ws://127.0.0.1:3000/ws/chat".to_string();
-    let (client, mut chunk_rx) = BackendClient::new(ws_url);
+    let (client, mut chunk_rx, mut status_rx) = BackendClient::new(ws_url);
     
     let (ui_tx, mut ui_rx) = mpsc::unbounded_channel();
     
@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
         }
     });
     
-    let res = run_app(&mut terminal, &mut app, client, &mut chunk_rx, &mut ui_rx).await;
+    let res = run_app(&mut terminal, &mut app, client, &mut chunk_rx, &mut status_rx, &mut ui_rx).await;
 
     disable_raw_mode()?;
     execute!(
@@ -159,13 +159,16 @@ async fn run_app<B: Backend>(
     app: &mut App,
     client: BackendClient,
     chunk_rx: &mut mpsc::UnboundedReceiver<StreamChunk>,
+    status_rx: &mut mpsc::UnboundedReceiver<ConnectionStatus>,
     ui_rx: &mut mpsc::UnboundedReceiver<Event>,
 ) -> Result<()> {
     loop {
-        app.connection_status = client.get_status().await;
         terminal.draw(|f| ui(f, app))?;
 
         tokio::select! {
+            Some(new_status) = status_rx.recv() => {
+                app.connection_status = new_status;
+            }
             Some(event) = ui_rx.recv() => {
                 match event {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
