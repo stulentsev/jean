@@ -26,6 +26,10 @@ impl LlmService {
         Self { client, model }
     }
 
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
     pub async fn stream_chat(
         &self,
         messages: Vec<ChatMessage>,

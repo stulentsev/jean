@@ -15,7 +15,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame, Terminal,
 };
-use jean_shared::{ChatMessage, ChatRequest, MessageRole, StreamChunk};
+use jean_shared::{ChatMessage, ClientChatRequest, MessageRole, StreamChunk};
 use std::io;
 use tokio::sync::mpsc;
 
@@ -205,10 +205,8 @@ async fn run_app<B: Backend>(
                                         .cloned()
                                         .collect();
                                     
-                                    let request = ChatRequest {
+                                    let request = ClientChatRequest {
                                         messages: messages_to_send,
-                                        model: String::new(), // Server will use its configured model
-                                        stream: true,
                                     };
                                     
                                     if let Err(e) = client.send_message(request).await {

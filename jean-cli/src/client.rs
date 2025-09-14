@@ -1,6 +1,6 @@
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
-use jean_shared::{ChatRequest, StreamChunk};
+use jean_shared::{ClientChatRequest, StreamChunk};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -15,12 +15,12 @@ pub enum ConnectionStatus {
 }
 
 pub struct BackendClient {
-    tx: mpsc::UnboundedSender<ChatRequest>,
+    tx: mpsc::UnboundedSender<ClientChatRequest>,
 }
 
 impl BackendClient {
     pub fn new(ws_url: String) -> (Self, mpsc::UnboundedReceiver<StreamChunk>, mpsc::UnboundedReceiver<ConnectionStatus>) {
-        let (tx, mut rx) = mpsc::unbounded_channel::<ChatRequest>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<ClientChatRequest>();
         let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<StreamChunk>();
         let (status_tx, status_rx) = mpsc::unbounded_channel::<ConnectionStatus>();
         let status = Arc::new(Mutex::new(ConnectionStatus::Disconnected));
@@ -110,7 +110,7 @@ impl BackendClient {
         (client, chunk_rx, status_rx)
     }
 
-    pub async fn send_message(&self, request: ChatRequest) -> Result<()> {
+    pub async fn send_message(&self, request: ClientChatRequest) -> Result<()> {
         self.tx.send(request)?;
         Ok(())
     }

@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use jean_shared::{ChatRequest, ChatResponse, StreamChunk};
+use jean_shared::{ClientChatRequest, ChatResponse, StreamChunk};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
@@ -66,7 +66,7 @@ async fn health() -> &'static str {
 }
 
 async fn chat(
-    Json(request): Json<ChatRequest>,
+    Json(request): Json<ClientChatRequest>,
     llm_service: Arc<LlmService>,
 ) -> Result<Json<ChatResponse>, StatusCode> {
     let mut rx = llm_service
@@ -87,7 +87,7 @@ async fn chat(
 
     Ok(Json(ChatResponse {
         content: full_response,
-        model: request.model,
+        model: llm_service.model().to_string(),
     }))
 }
 
@@ -101,7 +101,7 @@ async fn ws_handler(
 async fn handle_socket(mut socket: WebSocket, llm_service: Arc<LlmService>) {
     while let Some(msg) = socket.recv().await {
         if let Ok(Message::Text(text)) = msg {
-            match serde_json::from_str::<ChatRequest>(&text) {
+            match serde_json::from_str::<ClientChatRequest>(&text) {
                 Ok(request) => {
                     match llm_service.stream_chat(request.messages).await {
                         Ok(mut rx) => {
