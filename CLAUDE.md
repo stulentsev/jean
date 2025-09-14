@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Architecture
 
 ### Tech Stack
-- **Language**: Rust 2021 edition (workspace with shared dependencies)
+- **Language**: Rust 2024 edition (workspace with shared dependencies)
 - **Backend**: Axum web framework with WebSocket support
 - **Frontend**: Ratatui TUI library with crossterm for terminal control
 - **Communication**: WebSocket streaming (`ws://127.0.0.1:3000/ws/chat`)
