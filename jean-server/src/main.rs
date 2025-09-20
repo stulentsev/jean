@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use jean_shared::{ClientChatRequest, ChatResponse, StreamChunk};
+use jean_shared::{ClientChatRequest, ClientMessage, ChatResponse, StreamChunk};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
@@ -79,9 +79,14 @@ async fn chat(
 
     let mut full_response = String::new();
     while let Some(chunk) = rx.recv().await {
-        full_response.push_str(&chunk.delta);
-        if chunk.done {
-            break;
+        match chunk {
+            StreamChunk::Text { delta, done } => {
+                full_response.push_str(&delta);
+                if done {
+                    break;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -99,15 +104,46 @@ async fn ws_handler(
 }
 
 async fn handle_socket(mut socket: WebSocket, llm_service: Arc<LlmService>) {
+    info!("=== NEW WEBSOCKET CONNECTION ESTABLISHED ===");
+
     while let Some(msg) = socket.recv().await {
         if let Ok(Message::Text(text)) = msg {
-            match serde_json::from_str::<ClientChatRequest>(&text) {
-                Ok(request) => {
+            info!("=== MESSAGE RECEIVED FROM CLIENT ===");
+            info!("Raw message:\n{}", text);
+
+            match serde_json::from_str::<ClientMessage>(&text) {
+                Ok(ClientMessage::ChatRequest(request)) => {
+                    info!("Message type: ChatRequest");
+                    info!("Number of messages: {}", request.messages.len());
+                    for (i, msg) in request.messages.iter().enumerate() {
+                        info!("  Message {}: {:?} - {} chars", i, msg.role, msg.content.len());
+                    }
                     match llm_service.stream_chat(request.messages).await {
                         Ok(mut rx) => {
                             while let Some(chunk) = rx.recv().await {
-                                let is_done = chunk.done;
+                                let is_done = matches!(&chunk, StreamChunk::Text { done: true, .. });
+
+                                // Log different types of chunks
+                                match &chunk {
+                                    StreamChunk::Text { delta, done } => {
+                                        if *done {
+                                            info!("Sending completion chunk to client");
+                                        }
+                                    }
+                                    StreamChunk::ToolCall { id, name, arguments } => {
+                                        info!("=== SENDING TOOL CALL TO CLIENT ===");
+                                        info!("Tool: {} (ID: {})", name, id);
+                                        info!("Arguments: {}", arguments);
+                                    }
+                                    StreamChunk::ToolResult { id, content } => {
+                                        info!("Sending tool result: {} - {}", id, content);
+                                    }
+                                }
+
                                 if let Ok(response) = serde_json::to_string(&chunk) {
+                                    if matches!(&chunk, StreamChunk::ToolCall { .. }) {
+                                        info!("Serialized tool call message:\n{}", response);
+                                    }
                                     if let Err(e) = socket.send(Message::Text(response)).await {
                                         error!("Failed to send chunk: {}", e);
                                         break;
@@ -120,7 +156,7 @@ async fn handle_socket(mut socket: WebSocket, llm_service: Arc<LlmService>) {
                         }
                         Err(e) => {
                             error!("Failed to stream chat: {:?}", e);
-                            let error_chunk = StreamChunk {
+                            let error_chunk = StreamChunk::Text {
                                 delta: format!("Error: {}", e),
                                 done: true,
                             };
@@ -130,9 +166,30 @@ async fn handle_socket(mut socket: WebSocket, llm_service: Arc<LlmService>) {
                         }
                     }
                 }
+                Ok(ClientMessage::ToolResult { id, content }) => {
+                    info!("=== TOOL RESULT RECEIVED FROM CLIENT ===");
+                    info!("Tool ID: {}", id);
+                    info!("Result content length: {} chars", content.len());
+                    info!("Result preview (first 500 chars):\n{}",
+                        if content.len() > 500 {
+                            &content[..500]
+                        } else {
+                            &content
+                        });
+
+                    // Send acknowledgment
+                    let ack_chunk = StreamChunk::Text {
+                        delta: format!("Tool result received for {}", id),
+                        done: true,
+                    };
+                    info!("Sending acknowledgment to client");
+                    if let Ok(response) = serde_json::to_string(&ack_chunk) {
+                        let _ = socket.send(Message::Text(response)).await;
+                    }
+                }
                 Err(e) => {
                     error!("Failed to parse request: {}", e);
-                    let error_chunk = StreamChunk {
+                    let error_chunk = StreamChunk::Text {
                         delta: format!("Invalid request format: {}", e),
                         done: true,
                     };

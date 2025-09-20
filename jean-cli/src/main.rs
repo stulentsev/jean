@@ -18,6 +18,7 @@ use ratatui::{
 use jean_shared::{ChatMessage, ClientChatRequest, MessageRole, StreamChunk};
 use std::io;
 use tokio::sync::mpsc;
+use tracing::{debug, info};
 
 struct App {
     messages: Vec<ChatMessage>,
@@ -154,6 +155,165 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+async fn execute_tool(name: &str, arguments: &str) -> String {
+    match name {
+        "read_file" => {
+            // Parse arguments
+            let args: serde_json::Value = match serde_json::from_str(arguments) {
+                Ok(v) => v,
+                Err(e) => {
+                    return format!("Error parsing arguments: {}", e);
+                }
+            };
+
+            let filename = match args.get("filename").and_then(|f| f.as_str()) {
+                Some(f) => f,
+                None => {
+                    return "Error: filename parameter is required".to_string();
+                }
+            };
+
+            // Read the file
+            match tokio::fs::read_to_string(filename).await {
+                Ok(content) => content,
+                Err(e) => format!("Error reading file '{}': {}", filename, e),
+            }
+        }
+        "grep" => {
+            execute_grep(arguments).await
+        }
+        _ => format!("Unknown tool: {}", name),
+    }
+}
+
+async fn execute_grep(arguments: &str) -> String {
+    use glob::glob;
+    use regex::Regex;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    // Parse arguments
+    let args: serde_json::Value = match serde_json::from_str(arguments) {
+        Ok(v) => v,
+        Err(e) => {
+            return format!("Error parsing arguments: {}", e);
+        }
+    };
+
+    let search_term = match args.get("search_term").and_then(|s| s.as_str()) {
+        Some(s) => s,
+        None => {
+            return "Error: search_term parameter is required".to_string();
+        }
+    };
+
+    let filter = match args.get("filter").and_then(|f| f.as_str()) {
+        Some(f) => f,
+        None => {
+            return "Error: filter parameter is required".to_string();
+        }
+    };
+
+    let context_lines = args
+        .get("context_lines")
+        .and_then(|c| c.as_u64())
+        .unwrap_or(2) as usize;
+
+    // Compile regex
+    let regex = match Regex::new(search_term) {
+        Ok(r) => r,
+        Err(e) => {
+            return format!("Invalid regex pattern '{}': {}", search_term, e);
+        }
+    };
+
+    let mut results = Vec::new();
+
+    // Find matching files
+    let entries = match glob(filter) {
+        Ok(e) => e,
+        Err(e) => {
+            return format!("Invalid glob pattern '{}': {}", filter, e);
+        }
+    };
+
+    for entry in entries {
+        let path = match entry {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        if !path.is_file() {
+            continue;
+        }
+
+        // Read file and search for matches
+        let file = match tokio::fs::File::open(&path).await {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+
+        let reader = BufReader::new(file);
+        let mut lines_reader = reader.lines();
+        let mut lines_buffer: Vec<String> = Vec::new();
+        let mut line_num: usize = 0;
+
+        while let Ok(Some(line)) = lines_reader.next_line().await {
+            line_num += 1;
+            lines_buffer.push(line.clone());
+
+            // Keep only necessary context lines in buffer
+            if lines_buffer.len() > context_lines + 1 {
+                lines_buffer.remove(0);
+            }
+
+            // Check if current line matches
+            if regex.is_match(&line) {
+                let mut match_context = Vec::new();
+
+                // Add file path
+                match_context.push(format!("=== {} ===", path.display()));
+
+                // Calculate line numbers for context
+                let start_offset = lines_buffer.len().saturating_sub(1);
+                let start_line = line_num.saturating_sub(start_offset);
+
+                // Add lines with line numbers
+                for (i, context_line) in lines_buffer.iter().enumerate() {
+                    let current_line_num = start_line + i;
+                    if current_line_num == line_num {
+                        // Highlight the matching line
+                        match_context.push(format!("{}:> {}", current_line_num, context_line));
+                    } else {
+                        match_context.push(format!("{}:  {}", current_line_num, context_line));
+                    }
+                }
+
+                // Read ahead for context lines after match
+                let mut after_context = Vec::new();
+                for _ in 0..context_lines {
+                    if let Ok(Some(next_line)) = lines_reader.next_line().await {
+                        line_num += 1;
+                        after_context.push(format!("{}:  {}", line_num, next_line));
+                        lines_buffer.push(next_line);
+                        if lines_buffer.len() > context_lines + 1 {
+                            lines_buffer.remove(0);
+                        }
+                    }
+                }
+
+                match_context.extend(after_context);
+                results.push(match_context.join("\n"));
+            }
+        }
+    }
+
+    if results.is_empty() {
+        format!("No matches found for '{}' in files matching '{}'", search_term, filter)
+    } else {
+        format!("Found {} matches:\n\n{}", results.len(), results.join("\n\n"))
+    }
+}
+
 async fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -255,22 +415,94 @@ async fn run_app<B: Backend>(
                 }
             }
             Some(chunk) = chunk_rx.recv() => {
-                if chunk.done {
-                    // Check if the chunk contains an error message
-                    if chunk.delta.starts_with("Error") {
-                        app.finish_streaming();
-                        app.messages.push(ChatMessage {
-                            role: MessageRole::System,
-                            content: chunk.delta.clone(),
-                        });
-                    } else {
-                        app.finish_streaming();
+                match chunk {
+                    StreamChunk::Text { delta, done } => {
+                        if done {
+                            // Check if the chunk contains an error message
+                            if delta.starts_with("Error") {
+                                app.finish_streaming();
+                                app.messages.push(ChatMessage {
+                                    role: MessageRole::System,
+                                    content: delta.clone(),
+                                });
+                            } else {
+                                app.finish_streaming();
+                            }
+                            app.scroll_to_bottom();
+                        } else {
+                            app.append_stream_chunk(&delta);
+                            // Auto-scroll to bottom while streaming
+                            app.scroll_to_bottom();
+                        }
                     }
-                    app.scroll_to_bottom();
-                } else {
-                    app.append_stream_chunk(&chunk.delta);
-                    // Auto-scroll to bottom while streaming
-                    app.scroll_to_bottom();
+                    StreamChunk::ToolCall { id, name, arguments } => {
+                        info!("=== TOOL CALL RECEIVED FROM SERVER ===");
+                        info!("Tool ID: {}", id);
+                        info!("Tool Name: {}", name);
+                        info!("Arguments: {}", arguments);
+
+                        // Display tool call as assistant message
+                        // Try to pretty-print JSON arguments
+                        let formatted_args = if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&arguments) {
+                            serde_json::to_string_pretty(&json_val).unwrap_or_else(|_| arguments.to_string())
+                        } else {
+                            arguments.to_string()
+                        };
+
+                        let tool_call_msg = format!(
+                            "🔧 Calling tool: {}\nArguments:\n{}",
+                            name,
+                            formatted_args
+                        );
+                        app.messages.push(ChatMessage {
+                            role: MessageRole::Assistant,
+                            content: tool_call_msg,
+                        });
+                        app.scroll_to_bottom();
+
+                        // Execute the tool
+                        let result = execute_tool(&name, &arguments).await;
+                        info!("Tool execution completed");
+                        info!("Result length: {} chars", result.len());
+                        info!("Result preview (first 200 chars): {}",
+                            if result.len() > 200 {
+                                &result[..200]
+                            } else {
+                                &result
+                            });
+
+                        // Display tool result as assistant message
+                        let result_msg = format!(
+                            "📋 Tool result for {}:\n{}",
+                            name,
+                            if result.len() > 1000 {
+                                format!("{}... (truncated, {} total chars)", &result[..1000], result.len())
+                            } else {
+                                result.clone()
+                            }
+                        );
+                        app.messages.push(ChatMessage {
+                            role: MessageRole::Assistant,
+                            content: result_msg,
+                        });
+                        app.scroll_to_bottom();
+
+                        // Send tool result back to server
+                        info!("Sending tool result back to server...");
+                        if let Err(e) = client.send_tool_result(id.clone(), result.clone()).await {
+                            app.messages.push(ChatMessage {
+                                role: MessageRole::System,
+                                content: format!("Failed to send tool result: {}", e),
+                            });
+                            info!("ERROR: Failed to send tool result: {}", e);
+                        } else {
+                            info!("Tool result successfully sent to server");
+                        }
+                    }
+                    StreamChunk::ToolResult { id, content } => {
+                        // This shouldn't be received by the client from server
+                        debug!("Unexpected tool result from server: {} - {}", id, content);
+                    }
                 }
             }
         }

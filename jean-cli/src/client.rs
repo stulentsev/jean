@@ -1,10 +1,10 @@
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
-use jean_shared::{ClientChatRequest, StreamChunk};
+use jean_shared::{ClientChatRequest, ClientMessage, StreamChunk};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{error, debug, warn};
+use tracing::{error, debug, warn, info};
 
 #[derive(Clone)]
 pub enum ConnectionStatus {
@@ -15,12 +15,12 @@ pub enum ConnectionStatus {
 }
 
 pub struct BackendClient {
-    tx: mpsc::UnboundedSender<ClientChatRequest>,
+    tx: mpsc::UnboundedSender<ClientMessage>,
 }
 
 impl BackendClient {
     pub fn new(ws_url: String) -> (Self, mpsc::UnboundedReceiver<StreamChunk>, mpsc::UnboundedReceiver<ConnectionStatus>) {
-        let (tx, mut rx) = mpsc::unbounded_channel::<ClientChatRequest>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<ClientMessage>();
         let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<StreamChunk>();
         let (status_tx, status_rx) = mpsc::unbounded_channel::<ConnectionStatus>();
         let status = Arc::new(Mutex::new(ConnectionStatus::Disconnected));
@@ -47,15 +47,28 @@ impl BackendClient {
                         
                         loop {
                             tokio::select! {
-                                Some(request) = rx.recv() => {
-                                    debug!("Sending request to server");
-                                    match serde_json::to_string(&request) {
+                                Some(message) = rx.recv() => {
+                                    info!("=== CLIENT SENDING MESSAGE TO SERVER ===");
+                                    match &message {
+                                        ClientMessage::ChatRequest(req) => {
+                                            info!("Message type: ChatRequest");
+                                            info!("Number of messages: {}", req.messages.len());
+                                        }
+                                        ClientMessage::ToolResult { id, content } => {
+                                            info!("Message type: ToolResult");
+                                            info!("Tool ID: {}", id);
+                                            info!("Content length: {} chars", content.len());
+                                        }
+                                    }
+
+                                    match serde_json::to_string(&message) {
                                         Ok(json) => {
+                                            info!("Serialized message ({} bytes)", json.len());
                                             if let Err(e) = write.send(Message::Text(json)).await {
                                                 error!("Failed to send message: {}", e);
                                                 break;
                                             }
-                                            debug!("Request sent successfully");
+                                            info!("Message sent successfully");
                                         }
                                         Err(e) => {
                                             error!("Failed to serialize request: {}", e);
@@ -67,6 +80,20 @@ impl BackendClient {
                                         Ok(Message::Text(text)) => {
                                             match serde_json::from_str::<StreamChunk>(&text) {
                                                 Ok(chunk) => {
+                                                    match &chunk {
+                                                        StreamChunk::Text { delta, done } => {
+                                                            if *done {
+                                                                info!("Received completion chunk from server");
+                                                            }
+                                                        }
+                                                        StreamChunk::ToolCall { id, name, .. } => {
+                                                            info!("=== RECEIVED TOOL CALL FROM SERVER ===");
+                                                            info!("Tool: {} (ID: {})", name, id);
+                                                        }
+                                                        StreamChunk::ToolResult { id, .. } => {
+                                                            info!("Received tool result from server (ID: {})", id);
+                                                        }
+                                                    }
                                                     if chunk_tx.send(chunk).is_err() {
                                                         error!("Failed to send chunk to receiver");
                                                         break;
@@ -74,6 +101,7 @@ impl BackendClient {
                                                 }
                                                 Err(e) => {
                                                     error!("Failed to parse chunk: {}", e);
+                                                    error!("Raw text was: {}", text);
                                                 }
                                             }
                                         }
@@ -111,7 +139,12 @@ impl BackendClient {
     }
 
     pub async fn send_message(&self, request: ClientChatRequest) -> Result<()> {
-        self.tx.send(request)?;
+        self.tx.send(ClientMessage::ChatRequest(request))?;
+        Ok(())
+    }
+
+    pub async fn send_tool_result(&self, id: String, content: String) -> Result<()> {
+        self.tx.send(ClientMessage::ToolResult { id, content })?;
         Ok(())
     }
 }

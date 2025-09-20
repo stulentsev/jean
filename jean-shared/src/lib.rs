@@ -14,6 +14,19 @@ pub enum MessageRole {
     Assistant,
 }
 
+/// Message from client to server
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ClientMessage {
+    #[serde(rename = "chat_request")]
+    ChatRequest(ClientChatRequest),
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        id: String,
+        content: String,
+    },
+}
+
 /// Request from client to server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientChatRequest {
@@ -37,7 +50,22 @@ pub struct ChatResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamChunk {
-    pub delta: String,
-    pub done: bool,
+#[serde(tag = "type")]
+pub enum StreamChunk {
+    #[serde(rename = "text")]
+    Text {
+        delta: String,
+        done: bool,
+    },
+    #[serde(rename = "tool_call")]
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    },
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        id: String,
+        content: String,
+    },
 }
