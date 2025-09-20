@@ -16,9 +16,28 @@ use ratatui::{
     Frame, Terminal,
 };
 use jean_shared::{ChatMessage, ClientChatRequest, MessageRole, StreamChunk};
+use serde::{Deserialize, Serialize};
 use std::io;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
+
+// Tool argument structs
+#[derive(Debug, Deserialize, Serialize)]
+struct ReadFileArgs {
+    filename: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct GrepArgs {
+    search_term: String,
+    filter: String,
+    #[serde(default = "default_context_lines")]
+    context_lines: usize,
+}
+
+fn default_context_lines() -> usize {
+    2
+}
 
 struct App {
     messages: Vec<ChatMessage>,
@@ -158,96 +177,79 @@ async fn main() -> Result<()> {
 async fn execute_tool(name: &str, arguments: &str) -> String {
     match name {
         "read_file" => {
-            // Parse arguments
-            let args: serde_json::Value = match serde_json::from_str(arguments) {
-                Ok(v) => v,
+            // Parse arguments with typed struct
+            let args: ReadFileArgs = match serde_json::from_str(arguments) {
+                Ok(args) => args,
                 Err(e) => {
-                    return format!("Error parsing arguments: {}", e);
-                }
-            };
-
-            let filename = match args.get("filename").and_then(|f| f.as_str()) {
-                Some(f) => f,
-                None => {
-                    return "Error: filename parameter is required".to_string();
+                    return format!("Error parsing read_file arguments: {}", e);
                 }
             };
 
             // Read the file
-            match tokio::fs::read_to_string(filename).await {
+            match tokio::fs::read_to_string(&args.filename).await {
                 Ok(content) => content,
-                Err(e) => format!("Error reading file '{}': {}", filename, e),
+                Err(e) => format!("Error reading file '{}': {}", args.filename, e),
             }
         }
         "grep" => {
-            execute_grep(arguments).await
+            // Parse arguments with typed struct
+            let args: GrepArgs = match serde_json::from_str(arguments) {
+                Ok(args) => args,
+                Err(e) => {
+                    return format!("Error parsing grep arguments: {}", e);
+                }
+            };
+
+            execute_grep(args).await
         }
         _ => format!("Unknown tool: {}", name),
     }
 }
 
-async fn execute_grep(arguments: &str) -> String {
-    use glob::glob;
+async fn execute_grep(args: GrepArgs) -> String {
+    use ignore::{WalkBuilder, overrides::OverrideBuilder};
     use regex::Regex;
     use tokio::io::{AsyncBufReadExt, BufReader};
 
-    // Parse arguments
-    let args: serde_json::Value = match serde_json::from_str(arguments) {
-        Ok(v) => v,
-        Err(e) => {
-            return format!("Error parsing arguments: {}", e);
-        }
-    };
-
-    let search_term = match args.get("search_term").and_then(|s| s.as_str()) {
-        Some(s) => s,
-        None => {
-            return "Error: search_term parameter is required".to_string();
-        }
-    };
-
-    let filter = match args.get("filter").and_then(|f| f.as_str()) {
-        Some(f) => f,
-        None => {
-            return "Error: filter parameter is required".to_string();
-        }
-    };
-
-    let context_lines = args
-        .get("context_lines")
-        .and_then(|c| c.as_u64())
-        .unwrap_or(2) as usize;
-
     // Compile regex
-    let regex = match Regex::new(search_term) {
+    let regex = match Regex::new(&args.search_term) {
         Ok(r) => r,
         Err(e) => {
-            return format!("Invalid regex pattern '{}': {}", search_term, e);
+            return format!("Invalid regex pattern '{}': {}", args.search_term, e);
         }
     };
 
     let mut results = Vec::new();
 
-    // Find matching files
-    let entries = match glob(filter) {
-        Ok(e) => e,
-        Err(e) => {
-            return format!("Invalid glob pattern '{}': {}", filter, e);
-        }
-    };
+    // Build a walker that respects .gitignore
+    let mut builder = WalkBuilder::new(".");
+    builder.standard_filters(true); // Respects .gitignore, .ignore, etc.
 
-    for entry in entries {
-        let path = match entry {
-            Ok(p) => p,
+    // Add glob override for the filter pattern
+    let mut override_builder = OverrideBuilder::new(".");
+    if let Err(e) = override_builder.add(&args.filter) {
+        return format!("Invalid filter pattern '{}': {}", args.filter, e);
+    }
+    let overrides = match override_builder.build() {
+        Ok(o) => o,
+        Err(e) => return format!("Failed to build filter: {}", e),
+    };
+    builder.overrides(overrides);
+
+    // Walk through files
+    for entry in builder.build() {
+        let entry = match entry {
+            Ok(e) => e,
             Err(_) => continue,
         };
 
+        let path = entry.path();
         if !path.is_file() {
             continue;
         }
 
         // Read file and search for matches
-        let file = match tokio::fs::File::open(&path).await {
+        let file = match tokio::fs::File::open(path).await {
             Ok(f) => f,
             Err(_) => continue,
         };
@@ -262,7 +264,7 @@ async fn execute_grep(arguments: &str) -> String {
             lines_buffer.push(line.clone());
 
             // Keep only necessary context lines in buffer
-            if lines_buffer.len() > context_lines + 1 {
+            if lines_buffer.len() > args.context_lines + 1 {
                 lines_buffer.remove(0);
             }
 
@@ -290,12 +292,12 @@ async fn execute_grep(arguments: &str) -> String {
 
                 // Read ahead for context lines after match
                 let mut after_context = Vec::new();
-                for _ in 0..context_lines {
+                for _ in 0..args.context_lines {
                     if let Ok(Some(next_line)) = lines_reader.next_line().await {
                         line_num += 1;
                         after_context.push(format!("{}:  {}", line_num, next_line));
                         lines_buffer.push(next_line);
-                        if lines_buffer.len() > context_lines + 1 {
+                        if lines_buffer.len() > args.context_lines + 1 {
                             lines_buffer.remove(0);
                         }
                     }
@@ -308,7 +310,7 @@ async fn execute_grep(arguments: &str) -> String {
     }
 
     if results.is_empty() {
-        format!("No matches found for '{}' in files matching '{}'", search_term, filter)
+        format!("No matches found for '{}' in files matching '{}'", args.search_term, args.filter)
     } else {
         format!("Found {} matches:\n\n{}", results.len(), results.join("\n\n"))
     }
