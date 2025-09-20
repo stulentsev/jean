@@ -204,3 +204,4 @@ struct ToolResult {
 ## Project Guidelines
 
 - Never mention Claude or Claude Code in git commits or PR descriptions
+- never mention Claude Code in commit messages and PR descriptions

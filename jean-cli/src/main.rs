@@ -19,7 +19,7 @@ use jean_shared::{ChatMessage, ClientChatRequest, MessageRole, StreamChunk};
 use serde::{Deserialize, Serialize};
 use std::io;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 // Tool argument structs
 #[derive(Debug, Deserialize, Serialize)]
@@ -46,6 +46,7 @@ struct App {
     connection_status: ConnectionStatus,
     streaming_message: Option<String>,
     cursor_position: usize,
+    expecting_tool_response: bool,  // Track if we're waiting for response after tool execution
 }
 
 impl App {
@@ -57,6 +58,7 @@ impl App {
             connection_status: ConnectionStatus::Disconnected,
             streaming_message: None,
             cursor_position: 0,
+            expecting_tool_response: false,
         }
     }
 
@@ -64,6 +66,8 @@ impl App {
         self.messages.push(ChatMessage {
             role: MessageRole::User,
             content,
+            tool_call_id: None,
+            tool_calls: None,
         });
     }
 
@@ -83,6 +87,8 @@ impl App {
                 self.messages.push(ChatMessage {
                     role: MessageRole::Assistant,
                     content,
+                    tool_call_id: None,
+                    tool_calls: None,
                 });
             }
         }
@@ -383,6 +389,8 @@ async fn run_app<B: Backend>(
                                         app.messages.push(ChatMessage {
                                             role: MessageRole::System,
                                             content: format!("Failed to send message: {}", e),
+                                            tool_call_id: None,
+                                            tool_calls: None,
                                         });
                                     } else {
                                         app.start_streaming();
@@ -428,21 +436,31 @@ async fn run_app<B: Backend>(
                 match chunk {
                     StreamChunk::Text { delta, done } => {
                         if done {
-                            // Check if the chunk contains an error message
-                            if delta.starts_with("Error") {
-                                app.finish_streaming();
-                                app.messages.push(ChatMessage {
-                                    role: MessageRole::System,
-                                    content: delta.clone(),
-                                });
+                            if app.expecting_tool_response {
+                                // We just got a done after sending tool results, but don't finish streaming
+                                // The actual response is coming
+                                app.expecting_tool_response = false;
                             } else {
-                                app.finish_streaming();
+                                // Check if the chunk contains an error message
+                                if delta.starts_with("Error") {
+                                    app.finish_streaming();
+                                    app.messages.push(ChatMessage {
+                                        role: MessageRole::System,
+                                        content: delta.clone(),
+                                        tool_call_id: None,
+                                        tool_calls: None,
+                                    });
+                                } else {
+                                    app.finish_streaming();
+                                }
+                                app.scroll_to_bottom();
                             }
-                            app.scroll_to_bottom();
                         } else {
                             app.append_stream_chunk(&delta);
                             // Auto-scroll to bottom while streaming
                             app.scroll_to_bottom();
+                            // Force UI redraw to ensure scroll takes effect
+                            terminal.draw(|f| ui(f, app))?;
                         }
                     }
                     StreamChunk::ToolCall { id, name, arguments } => {
@@ -467,8 +485,13 @@ async fn run_app<B: Backend>(
                         app.messages.push(ChatMessage {
                             role: MessageRole::Assistant,
                             content: tool_call_msg,
+                            tool_call_id: None,
+                            tool_calls: None,
                         });
                         app.scroll_to_bottom();
+
+                        // Force UI refresh to show tool call immediately
+                        terminal.draw(|f| ui(f, app))?;
 
                         // Execute the tool
                         let result = execute_tool(&name, &arguments).await;
@@ -494,19 +517,34 @@ async fn run_app<B: Backend>(
                         app.messages.push(ChatMessage {
                             role: MessageRole::Assistant,
                             content: result_msg,
+                            tool_call_id: None,
+                            tool_calls: None,
                         });
                         app.scroll_to_bottom();
+
+                        // Force UI refresh to show tool result immediately
+                        terminal.draw(|f| ui(f, app))?;
+
+                        // Start streaming mode BEFORE sending tool result to avoid race condition
+                        app.start_streaming();
+                        app.expecting_tool_response = true;  // Mark that we're expecting a response after tool
 
                         // Send tool result back to server
                         info!("Sending tool result back to server...");
                         if let Err(e) = client.send_tool_result(id.clone(), result.clone()).await {
+                            // If sending failed, cancel streaming mode
+                            app.finish_streaming();
+                            app.expecting_tool_response = false;
                             app.messages.push(ChatMessage {
                                 role: MessageRole::System,
                                 content: format!("Failed to send tool result: {}", e),
+                                tool_call_id: None,
+                                tool_calls: None,
                             });
                             info!("ERROR: Failed to send tool result: {}", e);
                         } else {
                             info!("Tool result successfully sent to server");
+                            // Streaming mode already started, ready to receive response
                         }
                     }
                     StreamChunk::ToolResult { id, content } => {
@@ -572,6 +610,8 @@ fn render_chat(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 format!("{}▌", streaming) // Add cursor to show it's still streaming
             },
+            tool_call_id: None,
+            tool_calls: None,
         });
     }
     
@@ -580,12 +620,14 @@ fn render_chat(f: &mut Frame, app: &App, area: Rect) {
             MessageRole::System => Style::default().fg(Color::Yellow),
             MessageRole::User => Style::default().fg(Color::Cyan),
             MessageRole::Assistant => Style::default().fg(Color::Green),
+            MessageRole::Tool => Style::default().fg(Color::Magenta),
         };
         
         let prefix = match msg.role {
             MessageRole::System => "System",
             MessageRole::User => "You",
             MessageRole::Assistant => "Assistant",
+            MessageRole::Tool => "Tool",
         };
         
         // Add role prefix

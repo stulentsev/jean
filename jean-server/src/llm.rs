@@ -3,6 +3,7 @@ use async_openai::{
     types::{
         ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
         ChatCompletionRequestUserMessageArgs, ChatCompletionRequestAssistantMessageArgs,
+        ChatCompletionRequestToolMessageArgs,
         ChatCompletionMessageToolCall,
         FunctionCall,
         CreateChatCompletionRequestArgs, ChatCompletionTool, FunctionObject, ChatCompletionToolType,
@@ -13,7 +14,7 @@ use futures_util::StreamExt;
 use jean_shared::{ChatMessage, MessageRole, StreamChunk};
 use std::error::Error;
 use tokio::sync::mpsc;
-use tracing::{info, error, debug};
+use tracing::{info, error};
 
 pub struct LlmService {
     client: Client<OpenAIConfig>,
@@ -61,7 +62,9 @@ impl LlmService {
 
         // Dump the actual JSON that will be sent
         let request_json = serde_json::to_string_pretty(&request)?;
-        info!("JSON payload to OpenAI:\n{}", request_json);
+        info!("=== JSON PAYLOAD TO OPENAI ===");
+        info!("{}", request_json);
+        info!("=== END JSON PAYLOAD ===");
 
         let stream_result = self.client.chat().create_stream(request).await;
         
@@ -82,6 +85,7 @@ impl LlmService {
 
         tokio::spawn(async move {
             let mut tool_calls: Vec<ChatCompletionMessageToolCall> = Vec::new();
+            let mut sent_tool_calls = false;
 
             while let Some(result) = stream.next().await {
                 match result {
@@ -156,6 +160,7 @@ impl LlmService {
                                             error!("Failed to send tool call chunk");
                                             break;
                                         }
+                                        sent_tool_calls = true;
                                     }
 
                                     // Clear tool calls for next iteration
@@ -190,7 +195,9 @@ impl LlmService {
                 delta: String::new(),
                 done: true,
             };
-            let _ = tx.send(done_chunk);
+            if tx.send(done_chunk).is_err() {
+                error!("Failed to send done chunk");
+            }
         });
 
         Ok(rx)
@@ -276,9 +283,36 @@ impl LlmService {
                 )
             }
             MessageRole::Assistant => {
-                ChatCompletionRequestMessage::Assistant(
-                    ChatCompletionRequestAssistantMessageArgs::default()
+                let mut builder = ChatCompletionRequestAssistantMessageArgs::default();
+
+                // Only set content if it's not empty
+                if !msg.content.is_empty() {
+                    builder.content(msg.content);
+                }
+
+                // If there are tool calls, add them
+                if let Some(tool_calls) = msg.tool_calls {
+                    let calls: Vec<ChatCompletionMessageToolCall> = tool_calls
+                        .into_iter()
+                        .map(|tc| ChatCompletionMessageToolCall {
+                            id: tc.id,
+                            r#type: ChatCompletionToolType::Function,
+                            function: FunctionCall {
+                                name: tc.name,
+                                arguments: tc.arguments,
+                            },
+                        })
+                        .collect();
+                    builder.tool_calls(calls);
+                }
+
+                ChatCompletionRequestMessage::Assistant(builder.build()?)
+            }
+            MessageRole::Tool => {
+                ChatCompletionRequestMessage::Tool(
+                    ChatCompletionRequestToolMessageArgs::default()
                         .content(msg.content)
+                        .tool_call_id(msg.tool_call_id.unwrap_or_default())
                         .build()?
                 )
             }

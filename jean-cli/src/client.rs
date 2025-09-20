@@ -81,11 +81,7 @@ impl BackendClient {
                                             match serde_json::from_str::<StreamChunk>(&text) {
                                                 Ok(chunk) => {
                                                     match &chunk {
-                                                        StreamChunk::Text { delta, done } => {
-                                                            if *done {
-                                                                info!("Received completion chunk from server");
-                                                            }
-                                                        }
+                                                        StreamChunk::Text { .. } => {}
                                                         StreamChunk::ToolCall { id, name, .. } => {
                                                             info!("=== RECEIVED TOOL CALL FROM SERVER ===");
                                                             info!("Tool: {} (ID: {})", name, id);
@@ -95,7 +91,7 @@ impl BackendClient {
                                                         }
                                                     }
                                                     if chunk_tx.send(chunk).is_err() {
-                                                        error!("Failed to send chunk to receiver");
+                                                        error!("Failed to send chunk to receiver - channel closed?");
                                                         break;
                                                     }
                                                 }

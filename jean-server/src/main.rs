@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use jean_shared::{ClientChatRequest, ClientMessage, ChatResponse, StreamChunk};
+use jean_shared::{ClientChatRequest, ClientMessage, ChatMessage, MessageRole, ChatResponse, StreamChunk, ToolCall};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
@@ -106,6 +106,11 @@ async fn ws_handler(
 async fn handle_socket(mut socket: WebSocket, llm_service: Arc<LlmService>) {
     info!("=== NEW WEBSOCKET CONNECTION ESTABLISHED ===");
 
+    // Store conversation history for this connection
+    let mut conversation_history: Vec<ChatMessage> = Vec::new();
+    // Track pending tool calls from the assistant (for future use)
+    let mut _pending_tool_calls: Vec<ToolCall> = Vec::new();
+
     while let Some(msg) = socket.recv().await {
         if let Ok(Message::Text(text)) = msg {
             info!("=== MESSAGE RECEIVED FROM CLIENT ===");
@@ -118,14 +123,22 @@ async fn handle_socket(mut socket: WebSocket, llm_service: Arc<LlmService>) {
                     for (i, msg) in request.messages.iter().enumerate() {
                         info!("  Message {}: {:?} - {} chars", i, msg.role, msg.content.len());
                     }
+
+                    // Update conversation history with new messages
+                    conversation_history = request.messages.clone();
+
                     match llm_service.stream_chat(request.messages).await {
                         Ok(mut rx) => {
+                            let mut assistant_response = String::new();
+                            let mut current_tool_calls = Vec::new();
+
                             while let Some(chunk) = rx.recv().await {
                                 let is_done = matches!(&chunk, StreamChunk::Text { done: true, .. });
 
                                 // Log different types of chunks
                                 match &chunk {
                                     StreamChunk::Text { delta, done } => {
+                                        assistant_response.push_str(delta);
                                         if *done {
                                             info!("Sending completion chunk to client");
                                         }
@@ -134,6 +147,12 @@ async fn handle_socket(mut socket: WebSocket, llm_service: Arc<LlmService>) {
                                         info!("=== SENDING TOOL CALL TO CLIENT ===");
                                         info!("Tool: {} (ID: {})", name, id);
                                         info!("Arguments: {}", arguments);
+                                        // Store tool calls to track in conversation
+                                        current_tool_calls.push(ToolCall {
+                                            id: id.clone(),
+                                            name: name.clone(),
+                                            arguments: arguments.clone(),
+                                        });
                                     }
                                     StreamChunk::ToolResult { id, content } => {
                                         info!("Sending tool result: {} - {}", id, content);
@@ -150,6 +169,25 @@ async fn handle_socket(mut socket: WebSocket, llm_service: Arc<LlmService>) {
                                     }
                                 }
                                 if is_done {
+                                    // Handle the assistant's response based on what was received
+                                    if !current_tool_calls.is_empty() {
+                                        // Assistant made tool calls
+                                        _pending_tool_calls = current_tool_calls.clone();
+                                        conversation_history.push(ChatMessage {
+                                            role: MessageRole::Assistant,
+                                            content: String::new(), // Tool calls don't have text content
+                                            tool_call_id: None,
+                                            tool_calls: Some(current_tool_calls),
+                                        });
+                                    } else if !assistant_response.is_empty() {
+                                        // Assistant provided a text response
+                                        conversation_history.push(ChatMessage {
+                                            role: MessageRole::Assistant,
+                                            content: assistant_response.clone(),
+                                            tool_call_id: None,
+                                            tool_calls: None,
+                                        });
+                                    }
                                     break;
                                 }
                             }
@@ -177,14 +215,104 @@ async fn handle_socket(mut socket: WebSocket, llm_service: Arc<LlmService>) {
                             &content
                         });
 
-                    // Send acknowledgment
-                    let ack_chunk = StreamChunk::Text {
-                        delta: format!("Tool result received for {}", id),
-                        done: true,
-                    };
-                    info!("Sending acknowledgment to client");
-                    if let Ok(response) = serde_json::to_string(&ack_chunk) {
-                        let _ = socket.send(Message::Text(response)).await;
+                    // Add tool result as a Tool message with proper tool_call_id
+                    conversation_history.push(ChatMessage {
+                        role: MessageRole::Tool,
+                        content,
+                        tool_call_id: Some(id.clone()),
+                        tool_calls: None,
+                    });
+
+                    // Continue the conversation with the LLM
+                    info!("Continuing conversation with tool result");
+                    info!("Current conversation history length: {}", conversation_history.len());
+
+                    // Log the conversation history for debugging
+                    for (i, msg) in conversation_history.iter().enumerate() {
+                        info!("  History[{}]: {:?} - {} chars", i, msg.role, msg.content.len());
+                        if let Some(ref tool_calls) = msg.tool_calls {
+                            for tc in tool_calls {
+                                info!("    Tool call: {} ({})", tc.name, tc.id);
+                            }
+                        }
+                        if let Some(ref tool_id) = msg.tool_call_id {
+                            info!("    Tool result for: {}", tool_id);
+                        }
+                    }
+
+                    match llm_service.stream_chat(conversation_history.clone()).await {
+                        Ok(mut rx) => {
+                            let mut assistant_response = String::new();
+                            let mut current_tool_calls = Vec::new();
+
+                            while let Some(chunk) = rx.recv().await {
+                                let is_done = matches!(&chunk, StreamChunk::Text { done: true, .. });
+
+                                match &chunk {
+                                    StreamChunk::Text { delta, done } => {
+                                        assistant_response.push_str(delta);
+                                        if *done {
+                                            info!("=== FINAL LLM RESPONSE AFTER TOOL CALL ===");
+                                            info!("{}", assistant_response);
+                                            info!("=== END RESPONSE ({} chars) ===", assistant_response.len());
+                                        }
+                                    }
+                                    StreamChunk::ToolCall { id, name, arguments } => {
+                                        info!("=== SENDING ANOTHER TOOL CALL TO CLIENT ===");
+                                        info!("Tool: {} (ID: {})", name, id);
+                                        info!("Arguments: {}", arguments);
+                                        current_tool_calls.push(ToolCall {
+                                            id: id.clone(),
+                                            name: name.clone(),
+                                            arguments: arguments.clone(),
+                                        });
+                                    }
+                                    _ => {}
+                                }
+
+                                if let Ok(response) = serde_json::to_string(&chunk) {
+                                    if let Err(e) = socket.send(Message::Text(response)).await {
+                                        error!("Failed to send chunk: {}", e);
+                                        break;
+                                    }
+                                } else {
+                                    error!("Failed to serialize chunk");
+                                }
+
+                                if is_done {
+                                    // Handle the assistant's response based on what was received
+                                    if !current_tool_calls.is_empty() {
+                                        // Assistant made more tool calls
+                                        _pending_tool_calls = current_tool_calls.clone();
+                                        conversation_history.push(ChatMessage {
+                                            role: MessageRole::Assistant,
+                                            content: String::new(),
+                                            tool_call_id: None,
+                                            tool_calls: Some(current_tool_calls),
+                                        });
+                                    } else if !assistant_response.is_empty() {
+                                        // Assistant provided a text response
+                                        conversation_history.push(ChatMessage {
+                                            role: MessageRole::Assistant,
+                                            content: assistant_response,
+                                            tool_call_id: None,
+                                            tool_calls: None,
+                                        });
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to continue chat after tool result: {:?}", e);
+                            let error_chunk = StreamChunk::Text {
+                                delta: format!("Error continuing conversation: {}", e),
+                                done: true,
+                            };
+                            if let Ok(response) = serde_json::to_string(&error_chunk) {
+                                let _ = socket.send(Message::Text(response)).await;
+                            }
+                        }
                     }
                 }
                 Err(e) => {
