@@ -207,9 +207,10 @@ async fn execute_tool(name: &str, arguments: &str) -> String {
 }
 
 async fn execute_grep(args: GrepArgs) -> String {
-    use ignore::{WalkBuilder, overrides::OverrideBuilder};
+    use ignore::WalkBuilder;
     use regex::Regex;
     use tokio::io::{AsyncBufReadExt, BufReader};
+    use glob::Pattern;
 
     // Compile regex
     let regex = match Regex::new(&args.search_term) {
@@ -219,22 +220,24 @@ async fn execute_grep(args: GrepArgs) -> String {
         }
     };
 
+    // Compile glob pattern for filtering
+    let glob_pattern = match Pattern::new(&args.filter) {
+        Ok(p) => p,
+        Err(e) => {
+            return format!("Invalid filter pattern '{}': {}", args.filter, e);
+        }
+    };
+
     let mut results = Vec::new();
 
     // Build a walker that respects .gitignore
     let mut builder = WalkBuilder::new(".");
-    builder.standard_filters(true); // Respects .gitignore, .ignore, etc.
-
-    // Add glob override for the filter pattern
-    let mut override_builder = OverrideBuilder::new(".");
-    if let Err(e) = override_builder.add(&args.filter) {
-        return format!("Invalid filter pattern '{}': {}", args.filter, e);
-    }
-    let overrides = match override_builder.build() {
-        Ok(o) => o,
-        Err(e) => return format!("Failed to build filter: {}", e),
-    };
-    builder.overrides(overrides);
+    builder
+        .standard_filters(true) // Respects .gitignore, .ignore, etc.
+        .hidden(false) // Don't skip hidden files by default (let gitignore handle it)
+        .git_ignore(true) // Explicitly enable gitignore support
+        .git_global(true) // Also respect global gitignore
+        .git_exclude(true); // Also respect .git/info/exclude
 
     // Walk through files
     for entry in builder.build() {
@@ -245,6 +248,11 @@ async fn execute_grep(args: GrepArgs) -> String {
 
         let path = entry.path();
         if !path.is_file() {
+            continue;
+        }
+
+        // Check if the file matches the filter pattern
+        if !glob_pattern.matches_path(path) {
             continue;
         }
 
