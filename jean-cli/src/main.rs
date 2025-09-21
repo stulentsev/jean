@@ -1,6 +1,8 @@
 mod client;
+mod conversation_logger;
 
 use anyhow::Result;
+use conversation_logger::ConversationLogger;
 use client::{BackendClient, ConnectionStatus};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
@@ -47,10 +49,20 @@ struct App {
     streaming_message: Option<String>,
     cursor_position: usize,
     expecting_tool_response: bool,  // Track if we're waiting for response after tool execution
+    logger: ConversationLogger,
 }
 
 impl App {
     fn new() -> Self {
+        let logger = ConversationLogger::new().unwrap_or_else(|e| {
+            error!("Failed to create conversation logger: {}", e);
+            ConversationLogger::default()
+        });
+
+        if let Some(path) = logger.get_current_log_path() {
+            info!("Logging conversation to: {:?}", path);
+        }
+
         Self {
             messages: vec![],
             input: String::new(),
@@ -59,16 +71,24 @@ impl App {
             streaming_message: None,
             cursor_position: 0,
             expecting_tool_response: false,
+            logger,
         }
     }
 
     fn add_user_message(&mut self, content: String) {
-        self.messages.push(ChatMessage {
+        let message = ChatMessage {
             role: MessageRole::User,
             content,
             tool_call_id: None,
             tool_calls: None,
-        });
+        };
+
+        // Log the message
+        if let Err(e) = self.logger.log_message(&message) {
+            error!("Failed to log user message: {}", e);
+        }
+
+        self.messages.push(message);
     }
 
     fn start_streaming(&mut self) {
@@ -84,12 +104,19 @@ impl App {
     fn finish_streaming(&mut self) {
         if let Some(content) = self.streaming_message.take() {
             if !content.is_empty() {
-                self.messages.push(ChatMessage {
+                let message = ChatMessage {
                     role: MessageRole::Assistant,
                     content,
                     tool_call_id: None,
                     tool_calls: None,
-                });
+                };
+
+                // Log the complete assistant message
+                if let Err(e) = self.logger.log_message(&message) {
+                    error!("Failed to log assistant message: {}", e);
+                }
+
+                self.messages.push(message);
             }
         }
     }
@@ -343,6 +370,16 @@ async fn run_app<B: Backend>(
 
         tokio::select! {
             Some(new_status) = status_rx.recv() => {
+                // Log connection status change
+                let status_str = match &new_status {
+                    ConnectionStatus::Connected => "Connected",
+                    ConnectionStatus::Connecting => "Connecting",
+                    ConnectionStatus::Disconnected => "Disconnected",
+                    ConnectionStatus::Error(e) => &format!("Error: {}", e),
+                };
+                if let Err(e) = app.logger.log_connection_status(status_str) {
+                    error!("Failed to log connection status: {}", e);
+                }
                 app.connection_status = new_status;
             }
             Some(event) = ui_rx.recv() => {
@@ -375,9 +412,13 @@ async fn run_app<B: Backend>(
                                     app.cursor_position = 0;
                                     app.scroll_to_bottom();
                                     
-                                    // Filter out UI-only system messages
+                                    // Filter out UI-only system messages (ToolInfo)
                                     let messages_to_send: Vec<ChatMessage> = app.messages
                                         .iter()
+                                        .filter(|msg| {
+                                            // Exclude system messages that are ToolInfo (UI-only)
+                                            !(msg.role == MessageRole::System && msg.content.starts_with("[ToolInfo]"))
+                                        })
                                         .cloned()
                                         .collect();
                                     
@@ -386,12 +427,16 @@ async fn run_app<B: Backend>(
                                     };
                                     
                                     if let Err(e) = client.send_message(request).await {
-                                        app.messages.push(ChatMessage {
+                                        let error_msg = ChatMessage {
                                             role: MessageRole::System,
                                             content: format!("Failed to send message: {}", e),
                                             tool_call_id: None,
                                             tool_calls: None,
-                                        });
+                                        };
+                                        if let Err(log_err) = app.logger.log_message(&error_msg) {
+                                            error!("Failed to log error message: {}", log_err);
+                                        }
+                                        app.messages.push(error_msg);
                                     } else {
                                         app.start_streaming();
                                     }
@@ -433,6 +478,11 @@ async fn run_app<B: Backend>(
                 }
             }
             Some(chunk) = chunk_rx.recv() => {
+                // Log the stream chunk
+                if let Err(e) = app.logger.log_stream_chunk(&chunk) {
+                    error!("Failed to log stream chunk: {}", e);
+                }
+
                 match chunk {
                     StreamChunk::Text { delta, done } => {
                         if done {
@@ -444,12 +494,16 @@ async fn run_app<B: Backend>(
                                 // Check if the chunk contains an error message
                                 if delta.starts_with("Error") {
                                     app.finish_streaming();
-                                    app.messages.push(ChatMessage {
+                                    let error_msg = ChatMessage {
                                         role: MessageRole::System,
                                         content: delta.clone(),
                                         tool_call_id: None,
                                         tool_calls: None,
-                                    });
+                                    };
+                                    if let Err(e) = app.logger.log_message(&error_msg) {
+                                        error!("Failed to log error message: {}", e);
+                                    }
+                                    app.messages.push(error_msg);
                                 } else {
                                     app.finish_streaming();
                                 }
@@ -482,12 +536,16 @@ async fn run_app<B: Backend>(
                             name,
                             formatted_args
                         );
-                        app.messages.push(ChatMessage {
-                            role: MessageRole::Assistant,
-                            content: tool_call_msg,
+                        let tool_msg = ChatMessage {
+                            role: MessageRole::System,
+                            content: format!("[ToolInfo] {}", tool_call_msg),
                             tool_call_id: None,
                             tool_calls: None,
-                        });
+                        };
+                        if let Err(e) = app.logger.log_message(&tool_msg) {
+                            error!("Failed to log tool call message: {}", e);
+                        }
+                        app.messages.push(tool_msg);
                         app.scroll_to_bottom();
 
                         // Force UI refresh to show tool call immediately
@@ -504,6 +562,11 @@ async fn run_app<B: Backend>(
                                 &result
                             });
 
+                        // Log tool execution result
+                        if let Err(e) = app.logger.log_tool_execution(&id, &name, &result) {
+                            error!("Failed to log tool execution: {}", e);
+                        }
+
                         // Display tool result as assistant message
                         let result_msg = format!(
                             "📋 Tool result for {}:\n{}",
@@ -514,12 +577,16 @@ async fn run_app<B: Backend>(
                                 result.clone()
                             }
                         );
-                        app.messages.push(ChatMessage {
-                            role: MessageRole::Assistant,
-                            content: result_msg,
+                        let result_display_msg = ChatMessage {
+                            role: MessageRole::System,
+                            content: format!("[ToolInfo] {}", result_msg),
                             tool_call_id: None,
                             tool_calls: None,
-                        });
+                        };
+                        if let Err(e) = app.logger.log_message(&result_display_msg) {
+                            error!("Failed to log tool result display: {}", e);
+                        }
+                        app.messages.push(result_display_msg);
                         app.scroll_to_bottom();
 
                         // Force UI refresh to show tool result immediately
@@ -535,12 +602,16 @@ async fn run_app<B: Backend>(
                             // If sending failed, cancel streaming mode
                             app.finish_streaming();
                             app.expecting_tool_response = false;
-                            app.messages.push(ChatMessage {
+                            let error_msg = ChatMessage {
                                 role: MessageRole::System,
                                 content: format!("Failed to send tool result: {}", e),
                                 tool_call_id: None,
                                 tool_calls: None,
-                            });
+                            };
+                            if let Err(log_err) = app.logger.log_message(&error_msg) {
+                                error!("Failed to log error message: {}", log_err);
+                            }
+                            app.messages.push(error_msg);
                             info!("ERROR: Failed to send tool result: {}", e);
                         } else {
                             info!("Tool result successfully sent to server");

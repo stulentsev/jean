@@ -46,3 +46,4 @@ coverage/
 *.temp
 tmp/
 temp/
+conversation_logs
