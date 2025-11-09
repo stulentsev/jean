@@ -10,6 +10,14 @@ A terminal-based coding assistant built with Rust.
 
 ## Quick Start
 
+Prepare the .env file (don't forget to put your real api key in)
+
+```bash
+cp .env.example .env
+```
+
+Then
+
 ```bash
 # Run the backend
 cd jean-server

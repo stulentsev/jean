@@ -160,6 +160,8 @@ impl App {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    dotenv::dotenv().ok();
+
     // Initialize logging to file instead of terminal to avoid corrupting TUI
     let log_file = std::fs::File::create("jean-cli.log").ok();
     if let Some(file) = log_file {
@@ -176,8 +178,10 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+
+    let ws_host = std::env::var("JEAN_WS_HOST").expect("JEAN_WS_HOST not set");
     
-    let ws_url = "ws://127.0.0.1:3000/ws/chat".to_string();
+    let ws_url = format!("ws://{}/ws/chat", ws_host);
     let (client, mut chunk_rx, mut status_rx) = BackendClient::new(ws_url);
     
     let (ui_tx, mut ui_rx) = mpsc::unbounded_channel();
