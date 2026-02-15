@@ -3,205 +3,91 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
-**Jean** is a terminal-based coding agent built entirely in Rust. It is designed to autonomously complete coding tasks using available tools, pausing only when user input is required. The system provides rich tool-calling capabilities through both client-side (MCP servers) and server-side (codebase analysis, file operations) integrations. The project uses a client-server architecture with WebSocket streaming for real-time responses and tool execution feedback.
 
-## Architecture
+**Jean** is a terminal-based coding agent built in Rust. It uses a client-server architecture: the server wraps the OpenAI API and manages conversation state, while the CLI provides a Ratatui TUI that handles tool execution locally. Communication is over WebSocket with streaming responses and a tool-calling loop.
 
-### Tech Stack
-- **Language**: Rust 2024 edition (workspace with shared dependencies)
-- **Backend**: Axum web framework with WebSocket support
-- **Frontend**: Ratatui TUI library with crossterm for terminal control
-- **Communication**: WebSocket streaming (`ws://127.0.0.1:3000/ws/chat`)
-- **LLM Integration**: OpenAI API via `async-openai` crate
+## Crate Structure
 
-### Crate Structure
 ```
-jean/                    # Workspace root
-├── jean-shared/        # Shared types (ChatMessage, ChatRequest, StreamChunk)
-├── jean-server/        # Axum backend with OpenAI integration
-├── jean-cli/           # Ratatui TUI client (binary name: "jean")
-└── examples/           # Ratatui example code
+jean/                          # Workspace root (Rust 2024 edition)
+├── jean-shared/src/lib.rs    # All shared types (ChatMessage, ToolCall, StreamChunk, ClientMessage)
+├── jean-server/src/
+│   ├── main.rs               # Axum router, WebSocket handler, conversation history management
+│   └── llm.rs                # OpenAI client wrapper, tool definitions, streaming
+├── jean-cli/src/
+│   ├── main.rs               # TUI app (App struct, event loop, tool execution, UI rendering)
+│   ├── client.rs             # WebSocket client with auto-reconnection
+│   └── conversation_logger.rs # .jsonl conversation logging
+└── examples/                  # Ratatui learning examples
 ```
-
-### Key Architectural Patterns
-- **Shared Types Contract**: All communication types defined in `jean-shared` crate
-- **Async Everything**: Full tokio async runtime with `tokio::select!` for concurrent events
-- **Channel-based Communication**: Async channels between UI thread and WebSocket client
-- **Auto-reconnection**: WebSocket client automatically reconnects on failure
-- **Streaming Responses**: Real-time character-by-character display from OpenAI
 
 ## Development Commands
 
 ```bash
-# Build & Check
 cargo build                     # Build entire workspace
 cargo build -p jean-server      # Build specific crate
 cargo check                     # Fast compile check
-cargo clippy                    # Lint warnings
-cargo fmt                       # Format code
+cargo clippy                    # Lint
+cargo fmt                       # Format
 
-# Run Application
-cargo run -p jean-server        # Terminal 1: Start backend (requires .env)
-cargo run -p jean-cli           # Terminal 2: Start TUI client
+# Running (requires .env — copy from .env.example)
+cargo run -p jean-server        # Terminal 1: backend on 127.0.0.1:3000
+cargo run -p jean-cli           # Terminal 2: TUI client
 
-# Testing & Debugging
-./test_model.sh                 # Test OpenAI API directly
-tail -f jean-cli.log           # Monitor client logs (TUI logs to file)
-cargo test                      # Run tests (none exist yet)
+cargo test                      # No tests exist yet
 ```
 
-## Configuration
+## Environment Variables (.env)
 
-### Environment Variables (`.env` file required for server)
 ```
-OPENAI_API_KEY=sk-...          # OpenAI API key
-OPENAI_MODEL=gpt-5-mini        # Model to use (gpt-5-mini, gpt-5, gpt-5-nano)
-```
-
-### Important Files
-- `jean-cli.log`: Client debug logs (UI logs to file to avoid terminal corruption)
-- `test_model.sh`: Bash script for testing OpenAI API directly
-
-## Core Components
-
-### jean-shared Types
-- `MessageRole`: System/User/Assistant (serialized as lowercase)
-- `ChatMessage`: Role + content
-- `ChatRequest`: Messages array + model + stream flag
-- `StreamChunk`: Delta string + done flag for streaming
-
-### jean-server Implementation
-- **Entry**: `main.rs` sets up Axum router with CORS
-- **Handlers**: `handlers.rs` implements WebSocket chat endpoint
-- **LLM Service**: `llm_service.rs` wraps OpenAI client with streaming
-- **WebSocket**: Converts OpenAI stream to WebSocket messages
-
-### jean-cli Implementation
-- **App State**: `app.rs` manages messages, input, scroll, connection status
-- **Backend Client**: `backend.rs` handles WebSocket with auto-reconnect
-- **Event Loop**: `main.rs` uses `tokio::select!` for UI + WebSocket events
-- **UI Rendering**: `ui.rs` builds Ratatui widgets
-
-## Current Implementation Status
-
-### ✅ Working Features
-- Full WebSocket streaming from OpenAI to terminal
-- Auto-reconnection on network failures
-- Scrollable message history with arrow keys
-- Connection status indicator
-- Real-time streaming with typing indicator
-
-### ⚠️ Known Issues
-- No tests exist in any crate
-- WebSocket URL hardcoded to `ws://127.0.0.1:3000/ws/chat`
-- No configuration file support (only environment variables)
-- No tool-calling implementation yet
-
-## Important Development Notes
-
-### Error Handling
-- Uses `anyhow::Result` throughout for error propagation
-- Errors become system messages in chat UI
-- Comprehensive tracing with `tracing` crate
-
-### Logging Strategy
-- Server logs to stdout (use `tracing-subscriber`)
-- Client logs to file (`jean-cli.log`) to avoid TUI corruption
-- Never use `println!` in CLI code - use `tracing` macros
-
-### WebSocket Protocol
-- Client sends `ChatRequest` JSON
-- Server streams back `StreamChunk` messages
-- `done: true` in chunk signals completion
-- Connection status tracked and displayed in UI
-
-### Testing Approach
-When adding tests:
-- Unit test shared types serialization
-- Integration test WebSocket endpoints
-- Mock OpenAI responses for server tests
-- TUI testing requires special terminal handling
-- Tool execution tests with mocked file system
-- MCP server integration tests
-
-## Tool-Calling Architecture (To Be Implemented)
-
-### Overview
-Jean is designed as an autonomous coding agent that uses tools to complete tasks. The architecture supports two types of tool integrations:
-- **Client-Side Tools**: MCP (Model Context Protocol) servers for extensible capabilities
-- **Server-Side Tools**: Built-in tools for codebase analysis and file operations
-
-### Client-Side Tools (MCP Integration)
-- **MCP Server Support**: Connect to Model Context Protocol servers for extended capabilities
-- **Tool Discovery**: Dynamic discovery of available tools from MCP servers
-- **Tool Execution**: Client-side execution with result streaming back to server
-- **Security**: Sandboxed execution with user confirmation for sensitive operations
-- **Protocol**: JSON-RPC 2.0 over stdio/WebSocket for MCP communication
-
-### Server-Side Tools
-#### Codebase Analysis
-- `grep` - Search for patterns across files using ripgrep
-- `find` - Locate files by name, type, or attributes
-- `ast_search` - Search by AST patterns (language-aware)
-- `dependency_graph` - Analyze project dependencies
-- `symbol_lookup` - Find function/class definitions
-
-#### File Operations
-- `read_file` - Read file contents with line numbers
-- `write_file` - Create or overwrite files
-- `edit_file` - Make targeted edits with diff preview
-- `patch_file` - Apply unified diff patches
-- `create_directory` - Create project structure
-
-#### Development Tools
-- `run_command` - Execute shell commands with timeout and streaming output
-- `test_runner` - Run tests and parse structured results
-- `linter` - Run linting tools and format output
-- `build` - Compile project and capture errors
-- `debugger` - Set breakpoints and inspect state
-
-#### Version Control
-- `git_status` - Check repository state
-- `git_diff` - Show staged and unstaged changes
-- `git_commit` - Create commits with generated messages
-- `git_branch` - Manage branches
-- `git_log` - View commit history
-
-### Tool-Calling Protocol
-```rust
-// Tool request from LLM
-struct ToolCall {
-    id: String,
-    tool: String,
-    parameters: serde_json::Value,
-    requires_confirmation: bool,
-}
-
-// Tool result streamed back
-struct ToolResult {
-    id: String,
-    status: ToolStatus,
-    output: Option<String>,
-    error: Option<String>,
-}
+OPENAI_API_KEY=sk-...           # Required
+OPENAI_MODEL=gpt-5-mini         # Model selection
+JEAN_WS_HOST=127.0.0.1:3000    # WebSocket host (default: 127.0.0.1:3000)
 ```
 
-### Implementation Phases
-1. **Phase 1**: Basic file operations (read, write, edit) with WebSocket protocol
-2. **Phase 2**: Codebase search and analysis tools
-3. **Phase 3**: Development tools (test, build, lint) with streaming output
-4. **Phase 4**: MCP server integration for extensibility
-5. **Phase 5**: Advanced agent planning and multi-step task execution
+Both `jean-server` and `jean-cli` load `.env` via the `dotenv` crate.
 
-### Agent Capabilities (Future)
-- **Task Planning**: Decompose complex tasks into executable steps
-- **Context Management**: Intelligently gather and manage relevant context
-- **Error Recovery**: Retry failed operations with alternative approaches
-- **Learning**: Remember project-specific patterns and user preferences
-- **Collaboration**: Work alongside user with minimal interruption
-- **Tool Chaining**: Execute tools in sequence or parallel based on dependencies
+## Architecture
+
+### Communication Flow
+
+1. CLI sends `ClientMessage::ChatRequest` (contains message history) over WebSocket
+2. Server appends to per-connection conversation history, calls OpenAI with tool definitions
+3. Server streams back `StreamChunk::Text` deltas or `StreamChunk::ToolCall` messages
+4. On `ToolCall`: CLI executes the tool locally, sends `ClientMessage::ToolResult` back
+5. Server appends tool result to history, calls OpenAI again (loop continues until text response)
+
+### Tool Execution
+
+Tools are defined in `jean-server/src/llm.rs` and executed on the client in `jean-cli/src/main.rs`:
+
+- **`read_file`** — reads file contents via `tokio::fs::read_to_string`
+- **`grep`** — regex search across files using the `ignore` crate (respects `.gitignore`), with glob filtering and context lines
+
+The `execute_tool()` function in `jean-cli/src/main.rs` dispatches by tool name. Add new tools there and register their OpenAI function definitions in `llm.rs`.
+
+### Shared Types (`jean-shared`)
+
+- `MessageRole`: System / User / Assistant / Tool (serialized lowercase)
+- `ChatMessage`: role + content + optional tool_call_id + optional tool_calls
+- `ToolCall`: id + name + arguments (JSON string)
+- `ClientMessage`: enum — `ChatRequest` or `ToolResult { id, content }`
+- `StreamChunk`: enum — `Text { delta, done }` / `ToolCall { id, name, arguments }` / `ToolResult { id, content }`
+
+### Key Patterns
+
+- **`tokio::select!` event loop** in CLI: multiplexes keyboard input (from OS thread), WebSocket chunks, and connection status
+- **Channel-based**: `mpsc::unbounded_channel` connects WebSocket client to TUI; a separate channel carries `ConnectionStatus`
+- **Auto-reconnection**: `BackendClient` reconnects with 2-second delay on disconnect
+- **Conversation logging**: all messages logged to `conversation_logs/conversation_YYYYMMDD_HHMMSS.jsonl`
+
+## Development Notes
+
+- Client logs to `jean-cli.log` (never use `println!` in CLI code — it corrupts the TUI). Use `tracing` macros.
+- Server logs to stdout via `tracing-subscriber`.
+- `anyhow::Result` is used throughout for error propagation.
+- No tests exist yet in any crate.
 
 ## Project Guidelines
 
-- Never mention Claude or Claude Code in git commits or PR descriptions
-- never mention Claude Code in commit messages and PR descriptions
+- Never mention Claude or Claude Code in git commits or PR descriptions.
